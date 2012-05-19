@@ -1,5 +1,5 @@
-py-sync-production
-==================
+sync-production
+===============
 
 This Python (2.5-2.7) module provides a class that can act as a consumer for multiple
 producers in a multi-threaded scenario, delegating their output to another consumer,
