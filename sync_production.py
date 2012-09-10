@@ -80,6 +80,7 @@ class Consumer(object):
         # per-thread nesting depth.
         self.__keep_consecutive_depth = {}
         self.__exclusivity_depth = {}
+        self.__prolonged_exclusivity = {}
 
 
     def __output_from_sync(self, thing, thread_ident):
@@ -161,8 +162,6 @@ class Consumer(object):
 
 
     def __set_exclusivity(self, ident):
-        # Assume that resetting this is always since the
-        # context manager should call this.
         if ident is None:
 
             # Purge all buffers that exist just for the ending
@@ -215,6 +214,12 @@ def consecutive_mode(consumer):
     finally:
         consumer._Consumer__keep_consecutive_depth[ident] -= 1
         if not c:
+            # If exclusive mode was prolonged we must disable that mode here
+            # as well.
+            if consumer._Consumer__prolonged_exclusivity.get(ident, False):
+                del consumer._Consumer__prolonged_exclusivity[ident]
+                consumer._Consumer__set_exclusivity(None)
+            # In any case end the consecutive mode here.
             consumer._Consumer__make_consecutive(ident, False)
 
 ###################################################################
@@ -238,12 +243,21 @@ def exclusive_mode(consumer):
     finally:
         consumer._Consumer__exclusivity_depth[ident] -= 1
         if not c:
-            consumer._Consumer__set_exclusivity(None)
+            # Exclusive mode ends.
+            # Now careful: if we are still in a consecutive mode at this point,
+            # then we stay in exclusive mode since we might already have
+            # produced output from this thread. Any further output must
+            # stay consecutive until consecutive mode ends or we might
+            # violate the consecutivity contract.
+            if consumer._Consumer__keep_consecutive_depth.get(ident, 0) > 0:
+                consumer._Consumer__prolonged_exclusivity[ident] = True
+            else:
+                consumer._Consumer__set_exclusivity(None)
 
 ###################################################################
 
 class File(Consumer):
-    """An output-file-like object with the bufferd synchronization
+    """An output-file-like object with the buffered synchronization
     functionality."""
 
     def __init__(self, target_file,
@@ -343,8 +357,8 @@ if __name__ == '__main__':
     aaaaaaaaaaaaa4
     dddd3
     aaaaaaaaaaaaa5
-    bbbbbbbbbb1
     bbbbbbbbbb3
+    bbbbbbbbbb4
     bbbbbbbbbb5
     dddd4
     aaaaaaaaaaaaa6
@@ -356,7 +370,7 @@ if __name__ == '__main__':
     e5
     e  .
     e ...
-    e Your input, Sir? >testing
+    e Your input? >testing
     e ...
     e  .
     dddd5
@@ -370,15 +384,15 @@ if __name__ == '__main__':
     ccccccc7
     ccccccc8
     ccccccc9
-    bbbbbbbbbb2
-    bbbbbbbbbb5
+    bbbbbbbbbb6
+    bbbbbbbbbb7
     bbbbbbbbbb8
     aaaaaaaaaaaaa7
     aaaaaaaaaaaaa8
     aaaaaaaaaaaaa9
     dddd  .
     adddd ...
-    dddd Your input, Sir? >one more input...
+    dddd Your input? >one more input...
     dddd ...
     dddd  .
     e6
@@ -416,7 +430,7 @@ if __name__ == '__main__':
         for i in xrange(3):
             with consecutive_mode(s):
                 for j in xrange(3):
-                    write('%s%s\n' % (name, (i+1) * (j+1) - 1))
+                    write('%s%s\n' % (name, i * 3 + j))
 
     # All onsecutive output, senselessly nested for fun:
     def task3(name):
@@ -436,7 +450,7 @@ if __name__ == '__main__':
                 with exclusive_mode(s):
                     write('%s  .\n' % name)
                     write('%s ...\n' % name)
-                    raw_input('%s Your input, Sir? >' % name)
+                    raw_input('%s Your input? >' % name)
                     write('%s ...\n' % name)
                     write('%s  .\n' % name)
 
@@ -450,16 +464,51 @@ if __name__ == '__main__':
                         with consecutive_mode(s):
                             write('%s  .\n' % name)
                             write('%s ...\n' % name)
-                        raw_input('%s Your input, Sir? >' % name)
+                        raw_input('%s Your input? >' % name)
                         write('%s ...\n' % name)
                         write('%s  .\n' % name)
         for i in xrange(6, 10):
             write('%s%s\n' % (name, i))
 
     # Start a thread for each task
+    threads = []
     for name, func in [('aaaaaaaaaaaaa', task1),
                        ('bbbbbbbbbb', task2),
                        ('ccccccc', task3),
                        ('dddd', task4),
                        ('e', task5)]:
-        threading.Thread(name=name, target=func, args=(name,)).start()
+        threads.append(threading.Thread(name=name, target=func, args=(name,)))
+
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    ###################################################################
+    s.write('=' * 30)
+    s.write('\n')
+    
+    def task1():
+        with consecutive_mode(s):
+            s.write('task1: foo\n')
+            time.sleep(0.7)
+            s.write('task1: bar\n')
+            time.sleep(0.7)
+            s.write('task1: baz\n')
+    
+    def task2():
+        time.sleep(1)
+        with consecutive_mode(s):
+            s.write('task2: foo\n')
+            time.sleep(0.1)
+            with exclusive_mode(s):
+                raw_input('task2: input? >')
+            time.sleep(0.1)
+            s.write('task2: baz\n')
+
+    t1 = threading.Thread(target=task1)
+    t2 = threading.Thread(target=task2)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
